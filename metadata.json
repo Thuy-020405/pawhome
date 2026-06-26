@@ -1,0 +1,6 @@
+{
+  "name": "PawHome",
+  "description": "Hệ sinh thái chăm sóc thú cưng toàn diện PawHome - Tắm rửa, cắt tỉa, lưu trú và cung cấp dịch vụ y tế cho bé cưng.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
