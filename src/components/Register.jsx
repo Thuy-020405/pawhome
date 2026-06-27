@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { LOGO_IMAGE } from '../data';
+import { auth } from '../lib/firebase';
+import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 
 // Custom cute white & black cat image matching the design
 const CAT_COVER_IMAGE = "https://images.unsplash.com/photo-1548247416-ec66f4900b2e?auto=format&fit=crop&q=80&w=1200";
@@ -19,7 +21,45 @@ export default function Register({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSubmit = (e) => {
+  const getErrorMessageContent = () => {
+    if (!errorMsg) return null;
+    const isSpecialError = typeof errorMsg === 'string' && (
+      errorMsg.includes('auth/operation-not-allowed') || 
+      errorMsg.includes('operation-not-allowed')
+    );
+
+    if (isSpecialError) {
+      return (
+        <div className="text-start">
+          <div className="fw-bold text-danger mb-1.5 d-flex align-items-center gap-1.5" style={{ fontSize: '13.5px' }}>
+            <span className="material-symbols-outlined text-danger fs-5" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
+            Đăng ký bằng Email chưa được kích hoạt!
+          </div>
+          <p className="mb-2 text-dark small" style={{ fontSize: '12.5px', fontWeight: '500', lineHeight: '1.4' }}>
+            Hệ thống Firebase của ứng dụng hiện tại chưa kích hoạt nhà cung cấp <strong>Email/Password</strong> trong cấu hình Authentication. Để khắc phục và đăng ký tài khoản mới:
+          </p>
+          <ol className="ps-3 mb-2.5 small text-muted d-flex flex-column gap-1" style={{ fontSize: '11.5px', lineHeight: '1.4' }}>
+            <li>Mở trang quản trị <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-decoration-underline fw-bold text-primary">Firebase Console</a>.</li>
+            <li>Chọn dự án của bạn (Project ID: <strong className="text-dark">232253991900</strong>).</li>
+            <li>Đi đến mục <strong>Build &gt; Authentication &gt; Sign-in method</strong>.</li>
+            <li>Bấm <strong>Add new provider</strong>, chọn <strong>Email/Password</strong>, gạt nút <strong>Enable</strong> và bấm <strong>Save</strong>.</li>
+          </ol>
+          <div className="p-2 rounded bg-white border border-danger-subtle small text-dark mb-1" style={{ fontSize: '11px', lineHeight: '1.4' }}>
+            💡 <strong>Cách thay thế nhanh:</strong> Bạn có thể quay lại trang Đăng nhập và bấm <strong>Tiếp tục với Google</strong> để đăng nhập ngay mà không cần cấu hình!
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="d-flex align-items-center gap-2 fw-bold">
+        <span className="material-symbols-outlined fs-5">error</span>
+        <span>{typeof errorMsg === 'object' ? JSON.stringify(errorMsg) : errorMsg}</span>
+      </div>
+    );
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg('');
@@ -36,16 +76,50 @@ export default function Register({
       return;
     }
 
-    // Simulate register success
-    setTimeout(() => {
-      const user = {
-        name: fullName.trim() || 'Nguyễn Văn A',
-        email: email.trim(),
-        phone: phone.trim() || '0901234567',
-        address: address.trim() || 'Số 1 Võ Văn Ngân, Thủ Đức'
-      };
-      onRegisterSuccess(user);
-    }, 900);
+    try {
+      // 1. Create user in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      
+      // 2. Update Firebase display name
+      if (fullName.trim()) {
+        await updateProfile(userCredential.user, {
+          displayName: fullName.trim()
+        });
+      }
+
+      // 3. Retrieve ID Token
+      const idToken = await userCredential.user.getIdToken();
+
+      // 4. Post to database sync endpoint
+      const res = await fetch('/api/auth/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Tạo tài khoản thành công nhưng không thể đồng bộ dữ liệu với hệ thống.');
+      }
+
+      const dbUser = await res.json();
+      onRegisterSuccess({
+        id: dbUser.id,
+        name: dbUser.fullName || dbUser.email.split('@')[0],
+        email: dbUser.email,
+        phone: dbUser.phone || phone.trim() || '',
+        role: dbUser.role,
+        uid: dbUser.uid,
+        token: idToken
+      });
+    } catch (error) {
+      console.error('Registration error:', error);
+      setErrorMsg(error.message || 'Đăng ký tài khoản thất bại. Vui lòng kiểm tra lại thông tin.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -170,9 +244,8 @@ export default function Register({
 
             {/* Error notifications */}
             {errorMsg && (
-              <div className="alert alert-danger rounded-3 p-3 text-start small fw-bold mb-4 border-0 d-flex align-items-center gap-2" style={{ backgroundColor: '#fef2f2', color: '#ef4444' }}>
-                <span className="material-symbols-outlined fs-5">error</span>
-                <span>{errorMsg}</span>
+              <div className="alert alert-danger rounded-3 p-3 text-start small mb-4 border-0" style={{ backgroundColor: '#fef2f2', color: '#ef4444' }}>
+                {getErrorMessageContent()}
               </div>
             )}
 

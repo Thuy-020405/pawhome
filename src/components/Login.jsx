@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { LOGO_IMAGE } from '../data';
+import { auth, googleAuthProvider } from '../lib/firebase';
+import { signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
 
 const LOGIN_COVER_IMAGE = "https://images.unsplash.com/photo-1623387641168-d9803ddd3f35?auto=format&fit=crop&q=80&w=1200";
 
@@ -15,43 +17,160 @@ export default function Login({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const handleSubmit = (e) => {
+  const getErrorMessageContent = () => {
+    if (!errorMsg) return null;
+    const isSpecialError = typeof errorMsg === 'string' && (
+      errorMsg.includes('auth/operation-not-allowed') || 
+      errorMsg.includes('operation-not-allowed')
+    );
+
+    if (isSpecialError) {
+      return (
+        <div className="text-start">
+          <div className="fw-bold text-danger mb-1.5 d-flex align-items-center gap-1.5" style={{ fontSize: '13.5px' }}>
+            <span className="material-symbols-outlined text-danger fs-5" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
+            Đăng nhập bằng Email chưa được kích hoạt!
+          </div>
+          <p className="mb-2 text-dark small" style={{ fontSize: '12.5px', fontWeight: '500', lineHeight: '1.4' }}>
+            Hệ thống Firebase của ứng dụng hiện tại chưa kích hoạt nhà cung cấp <strong>Email/Password</strong> trong cấu hình Authentication. Để khắc phục và sử dụng các tài khoản mẫu ở dưới:
+          </p>
+          <ol className="ps-3 mb-2.5 small text-muted d-flex flex-column gap-1" style={{ fontSize: '11.5px', lineHeight: '1.4' }}>
+            <li>Mở trang quản trị <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-decoration-underline fw-bold text-primary">Firebase Console</a>.</li>
+            <li>Chọn dự án của bạn (Project ID: <strong className="text-dark">232253991900</strong>).</li>
+            <li>Đi đến mục <strong>Build &gt; Authentication &gt; Sign-in method</strong>.</li>
+            <li>Bấm <strong>Add new provider</strong>, chọn <strong>Email/Password</strong>, gạt nút <strong>Enable</strong> và bấm <strong>Save</strong>.</li>
+          </ol>
+          <div className="p-2 rounded bg-white border border-danger-subtle small text-dark mb-1" style={{ fontSize: '11px', lineHeight: '1.4' }}>
+            💡 <strong>Cách thay thế nhanh:</strong> Bạn có thể bấm nút <strong>Tiếp tục với Google</strong> ở bên dưới để đăng nhập ngay lập tức mà không cần cấu hình thêm!
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="d-flex align-items-center gap-2 fw-bold">
+        <span className="material-symbols-outlined fs-5">error</span>
+        <span>{typeof errorMsg === 'object' ? JSON.stringify(errorMsg) : errorMsg}</span>
+      </div>
+    );
+  };
+
+  const handleDemoLogin = async (role) => {
+    setIsSubmitting(true);
+    setErrorMsg('');
+    try {
+      const idToken = `demo-${role}`;
+      const res = await fetch('/api/auth/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Đăng nhập thử nghiệm thất bại.');
+      }
+
+      const dbUser = await res.json();
+      onLoginSuccess({
+        id: dbUser.id,
+        name: dbUser.fullName || dbUser.email.split('@')[0],
+        email: dbUser.email,
+        phone: dbUser.phone || '',
+        role: dbUser.role,
+        uid: dbUser.uid,
+        token: idToken
+      });
+    } catch (error) {
+      console.error('Demo login error:', error);
+      setErrorMsg(error.message || 'Đăng nhập thử nghiệm thất bại.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg('');
 
-    // Simulate login validation
-    setTimeout(() => {
-      if (email.trim() && password.length >= 6) {
-        const mockName = email.split('@')[0];
-        const formattedName = mockName.charAt(0).toUpperCase() + mockName.slice(1);
-        const user = {
-          name: formattedName || 'Nguyễn Văn A',
-          email: email.trim(),
-          phone: '0912345678',
-          role: activeRole,
-          address: 'Số 1 Võ Văn Ngân, Thủ Đức'
-        };
-        onLoginSuccess(user);
-      } else {
-        setErrorMsg('Mật khẩu tối thiểu phải từ 6 ký tự.');
-        setIsSubmitting(false);
+    try {
+      if (!email.trim() || password.length < 6) {
+        throw new Error('Mật khẩu tối thiểu phải từ 6 ký tự.');
       }
-    }, 850);
+
+      const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const idToken = await userCredential.user.getIdToken();
+      
+      const res = await fetch('/api/auth/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Đăng nhập thành công nhưng không thể đồng bộ với hệ thống dữ liệu.');
+      }
+
+      const dbUser = await res.json();
+      onLoginSuccess({
+        id: dbUser.id,
+        name: dbUser.fullName || dbUser.email.split('@')[0],
+        email: dbUser.email,
+        phone: dbUser.phone || '',
+        role: dbUser.role,
+        uid: dbUser.uid,
+        token: idToken
+      });
+    } catch (error) {
+      console.error('Login error:', error);
+      setErrorMsg(error.message || 'Tài khoản hoặc mật khẩu không chính xác.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleGoogleLogin = () => {
+  const handleGoogleLogin = async () => {
     setIsSubmitting(true);
-    setTimeout(() => {
-      const user = {
-        name: 'Nguyễn Văn A',
-        email: 'nguyenvana@gmail.com',
-        phone: '0912345678',
-        role: activeRole,
-        address: 'Số 1 Võ Văn Ngân, Thủ Đức'
-      };
-      onLoginSuccess(user);
-    }, 700);
+    setErrorMsg('');
+    try {
+      const userCredential = await signInWithPopup(auth, googleAuthProvider);
+      const idToken = await userCredential.user.getIdToken();
+
+      const res = await fetch('/api/auth/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Đăng nhập bằng Google thành công nhưng đồng bộ dữ liệu thất bại.');
+      }
+
+      const dbUser = await res.json();
+      onLoginSuccess({
+        id: dbUser.id,
+        name: dbUser.fullName || dbUser.email.split('@')[0],
+        email: dbUser.email,
+        phone: dbUser.phone || '',
+        role: dbUser.role,
+        uid: dbUser.uid,
+        token: idToken
+      });
+    } catch (error) {
+      console.error('Google Login error:', error);
+      setErrorMsg(error.message || 'Đăng nhập Google thất bại hoặc bị hủy bỏ.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -176,9 +295,8 @@ export default function Login({
 
             {/* Error notifications */}
             {errorMsg && (
-              <div className="alert alert-danger rounded-3 p-3 text-start small fw-bold mb-4 border-0 d-flex align-items-center gap-2" style={{ backgroundColor: '#fef2f2', color: '#ef4444' }}>
-                <span className="material-symbols-outlined fs-5">error</span>
-                <span>{errorMsg}</span>
+              <div className="alert alert-danger rounded-3 p-3 text-start small mb-4 border-0" style={{ backgroundColor: '#fef2f2', color: '#ef4444' }}>
+                {getErrorMessageContent()}
               </div>
             )}
 
@@ -295,6 +413,67 @@ export default function Login({
               />
               <span>Tiếp tục với Google</span>
             </button>
+
+            {/* Pre-seeded credentials helper box */}
+            <div 
+              className="card border-0 mt-4 p-3.5 text-start"
+              style={{ 
+                backgroundColor: '#f8fafc',
+                borderRadius: '18px',
+                border: '1px solid #f1f5f9'
+              }}
+            >
+              <h4 className="fw-bold text-dark mb-2 d-flex align-items-center gap-1.5" style={{ fontSize: '13px' }}>
+                <span className="material-symbols-outlined text-primary-custom" style={{ fontSize: '16px' }}>key</span>
+                Đăng nhập nhanh không cần mật khẩu (Bypass):
+              </h4>
+              <p className="text-muted mb-3" style={{ fontSize: '11px', lineHeight: '1.4' }}>
+                Bấm trực tiếp vào các tài khoản dưới đây để đăng nhập chạy thử nhanh mà không cần cấu hình Firebase:
+              </p>
+              <div className="d-flex flex-column gap-2 small" style={{ fontSize: '12px' }}>
+                <button 
+                  type="button"
+                  onClick={() => handleDemoLogin('admin')}
+                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="badge bg-danger" style={{ fontSize: '9px' }}>QUẢN TRỊ VIÊN (ADMIN)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                  </div>
+                  <div className="text-muted mt-1">Email: <strong className="text-dark">admin@pawhome.vn</strong></div>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => handleDemoLogin('customer')}
+                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="badge bg-success" style={{ fontSize: '9px' }}>KHÁCH HÀNG (CUSTOMER)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                  </div>
+                  <div className="text-muted mt-1">Email: <strong className="text-dark">customer@pawhome.vn</strong></div>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => handleDemoLogin('expert')}
+                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="badge bg-primary" style={{ fontSize: '9px' }}>CHUYÊN GIA (EXPERT)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                  </div>
+                  <div className="text-muted mt-1">Email: <strong className="text-dark">expert@pawhome.vn</strong></div>
+                </button>
+              </div>
+              <p className="mt-3 mb-0 text-muted" style={{ fontSize: '10.5px', lineHeight: '1.4' }}>
+                💡 <strong>Lưu ý:</strong> Cách này giúp bạn trải nghiệm đầy đủ vai trò một cách cực kỳ tiện lợi!
+              </p>
+            </div>
 
           </div>
 

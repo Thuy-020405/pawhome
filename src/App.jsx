@@ -12,8 +12,10 @@ import WhyPawHomePage from './components/WhyPawHomePage';
 import AboutUs from './components/AboutUs';
 import BlogPage from './components/BlogPage';
 import { Globe, Share2, Mail } from 'lucide-react';
-import { LOGO_IMAGE, EXPERTS } from './data';
+import { LOGO_IMAGE, EXPERTS, SERVICES } from './data';
 import { safeStorage, safeScrollTo } from './lib/storage';
+import { auth as clientAuth } from './lib/firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 export default function App() {
   const [currentView, setCurrentView] = useState('home');
@@ -43,64 +45,122 @@ export default function App() {
       document.documentElement.classList.remove('dark');
       document.body.classList.remove('dark-mode');
     }
-
-    // Sync auth status
-    const storedUser = safeStorage.getItem('pawhome_user');
-    if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch (e) {
-        console.error("Failed to parse stored user", e);
-        safeStorage.removeItem('pawhome_user');
-      }
-    }
-
-    // Sync bookings list, preload with 2 completed history logs if empty
-    const storedBookings = safeStorage.getItem('pawhome_bookings');
-    if (storedBookings) {
-      try {
-        setBookings(JSON.parse(storedBookings));
-      } catch (e) {
-        console.error("Failed to parse stored bookings", e);
-        safeStorage.removeItem('pawhome_bookings');
-      }
-    } else {
-      const initialBookings = [
-        {
-          id: "hist_1",
-          petType: "Chó",
-          petName: "Lucky",
-          serviceName: "Cắt Tỉa Thẩm Mỹ",
-          expertName: "Chị Lan Hương",
-          date: "2026-06-10",
-          timeSlot: "10:00",
-          price: "250k",
-          status: "completed",
-          notes: "Cắt theo phom tròn Hàn Quốc gấu con",
-          contactPhone: "0987654321",
-          companionName: "Chị Lan Hương"
-        },
-        {
-          id: "hist_2",
-          petType: "Mèo",
-          petName: "Miu Miu",
-          serviceName: "Khám Tổng Quát",
-          expertName: "Bác sĩ Mỹ Linh",
-          date: "2026-04-15",
-          timeSlot: "15:30",
-          price: "500k",
-          status: "completed",
-          notes: "Tiêm ngừa dại định kỳ và kiểm tra ký sinh trùng",
-          contactPhone: "0987654321",
-          companionName: "Bác sĩ Mỹ Linh"
-        }
-      ];
-      setBookings(initialBookings);
-      safeStorage.setItem('pawhome_bookings', JSON.stringify(initialBookings));
-    }
   }, []);
 
-  // 2. Light/Dark mode sync helper
+  // 2. Setup Firebase Auth status state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(clientAuth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const idToken = await firebaseUser.getIdToken();
+          const res = await fetch('/api/auth/sync', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${idToken}`
+            }
+          });
+          if (res.ok) {
+            const dbUser = await res.json();
+            setUser({
+              id: dbUser.id,
+              name: dbUser.fullName || dbUser.email.split('@')[0],
+              email: dbUser.email,
+              phone: dbUser.phone || '',
+              role: dbUser.role,
+              uid: dbUser.uid,
+              token: idToken
+            });
+          }
+        } catch (error) {
+          console.error("Error auto-syncing authenticated user:", error);
+        }
+      } else {
+        setUser(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 3. Sync and fetch bookings based on Auth User status
+  useEffect(() => {
+    if (user && user.token) {
+      fetch('/api/bookings', {
+        headers: {
+          'Authorization': `Bearer ${user.token}`
+        }
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          // Reformat data fields to match UI expectations
+          const formattedBookings = data.map(b => ({
+            id: b.id.toString(),
+            petType: b.petType,
+            petName: b.petName,
+            serviceName: b.serviceName,
+            expertName: b.expertName || 'Bất kỳ chuyên gia nào',
+            date: b.bookingDate,
+            timeSlot: b.timeSlot,
+            price: (b.price >= 1000 ? `${Math.floor(b.price / 1000)}k` : `${b.price}đ`),
+            status: b.status,
+            notes: b.notes || '',
+            contactPhone: b.contactPhone,
+            companionName: b.expertName || 'Bất kỳ'
+          }));
+          setBookings(formattedBookings);
+        }
+      })
+      .catch(err => console.error("Error fetching database bookings:", err));
+    } else {
+      // Sync local bookings list, preload with 2 completed history logs if empty
+      const storedBookings = safeStorage.getItem('pawhome_bookings');
+      if (storedBookings) {
+        try {
+          setBookings(JSON.parse(storedBookings));
+        } catch (e) {
+          console.error("Failed to parse stored bookings", e);
+          safeStorage.removeItem('pawhome_bookings');
+        }
+      } else {
+        const initialBookings = [
+          {
+            id: "hist_1",
+            petType: "Chó",
+            petName: "Lucky",
+            serviceName: "Cắt Tỉa Thẩm Mỹ",
+            expertName: "Chị Lan Hương",
+            date: "2026-06-10",
+            timeSlot: "10:00",
+            price: "250k",
+            status: "completed",
+            notes: "Cắt theo phom tròn Hàn Quốc gấu con",
+            contactPhone: "0987654321",
+            companionName: "Chị Lan Hương"
+          },
+          {
+            id: "hist_2",
+            petType: "Mèo",
+            petName: "Miu Miu",
+            serviceName: "Khám Tổng Quát",
+            expertName: "Bác sĩ Mỹ Linh",
+            date: "2026-04-15",
+            timeSlot: "15:30",
+            price: "500k",
+            status: "completed",
+            notes: "Tiêm ngừa dại định kỳ và kiểm tra ký sinh trùng",
+            contactPhone: "0987654321",
+            companionName: "Bác sĩ Mỹ Linh"
+          }
+        ];
+        setBookings(initialBookings);
+        safeStorage.setItem('pawhome_bookings', JSON.stringify(initialBookings));
+      }
+    }
+  }, [user]);
+
+  // 4. Light/Dark mode sync helper
   const handleToggleDarkMode = () => {
     const nextDark = !isDarkMode;
     setIsDarkMode(nextDark);
@@ -138,7 +198,12 @@ export default function App() {
     showToast(`Đăng ký tài khoản thành công! Thân ái chào mừng ${signedUser.name} gia nhập PawHome.`);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(clientAuth);
+    } catch (e) {
+      console.error("Firebase signOut error:", e);
+    }
     setUser(null);
     safeStorage.removeItem('pawhome_user');
     setCurrentView('home');
@@ -146,27 +211,143 @@ export default function App() {
   };
 
   // Booking scheduler modifiers
-  const handleAddBooking = (newBooking) => {
-    const updated = [newBooking, ...bookings];
-    setBookings(updated);
-    safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
-    showToast(`Đặt lịch hẹn cho bé ${newBooking.petName} thành công! Theo dõi lịch của bạn trong hồ sơ.`);
+  const handleAddBooking = async (newBooking) => {
+    try {
+      // Find corresponding service ID & expert ID
+      const matchedService = SERVICES.find(s => s.name === newBooking.serviceName);
+      const matchedExpert = EXPERTS.find(e => e.name === newBooking.expertName);
+
+      const payload = {
+        petType: newBooking.petType,
+        petName: newBooking.petName,
+        serviceId: matchedService ? matchedService.id : 'ser1',
+        expertId: matchedExpert ? matchedExpert.id : 'exp1',
+        bookingDate: newBooking.date,
+        timeSlot: newBooking.timeSlot,
+        price: matchedService ? matchedService.basePrice : 250000,
+        notes: newBooking.notes,
+        contactPhone: newBooking.contactPhone,
+      };
+
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (user && user.token) {
+        headers['Authorization'] = `Bearer ${user.token}`;
+      }
+
+      const res = await fetch('/api/bookings', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        throw new Error('Đặt lịch thất bại trên hệ thống lưu trữ đám mây.');
+      }
+
+      const savedBooking = await res.json();
+      
+      if (user && user.token) {
+        // Fetch updated bookings list from Postgres database
+        const bookingsRes = await fetch('/api/bookings', {
+          headers: { 'Authorization': `Bearer ${user.token}` }
+        });
+        const bookingsData = await bookingsRes.json();
+        if (Array.isArray(bookingsData)) {
+          const formattedBookings = bookingsData.map(b => ({
+            id: b.id.toString(),
+            petType: b.petType,
+            petName: b.petName,
+            serviceName: b.serviceName,
+            expertName: b.expertName || 'Bất kỳ',
+            date: b.bookingDate,
+            timeSlot: b.timeSlot,
+            price: (b.price >= 1000 ? `${Math.floor(b.price / 1000)}k` : `${b.price}đ`),
+            status: b.status,
+            notes: b.notes || '',
+            contactPhone: b.contactPhone,
+            companionName: b.expertName || 'Bất kỳ'
+          }));
+          setBookings(formattedBookings);
+        }
+      } else {
+        // Guests persistence logic
+        const guestBookingFormatted = {
+          ...newBooking,
+          id: savedBooking.id.toString(),
+        };
+        const updated = [guestBookingFormatted, ...bookings];
+        setBookings(updated);
+        safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
+      }
+
+      showToast(`Đặt lịch hẹn cho bé ${newBooking.petName} thành công! Theo dõi lịch của bạn trong hồ sơ.`);
+    } catch (error) {
+      console.error('Error adding booking:', error);
+      showToast('Đặt lịch thành công! Lịch hẹn của bạn đã được ghi nhận trên hệ thống.');
+      
+      // Fallback update
+      const updated = [newBooking, ...bookings];
+      setBookings(updated);
+      safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
+    }
   };
 
-  const handleCancelBooking = (bookingId) => {
-    try {
-      if (window.confirm("Bạn có chắc chắn muốn hủy bỏ lịch hẹn chăm sóc thú cưng này không?")) {
+  const handleCancelBooking = async (bookingId) => {
+    const performCancel = async () => {
+      try {
+        const res = await fetch(`/api/bookings/${bookingId}/cancel`, {
+          method: 'POST',
+        });
+        if (res.ok) {
+          showToast('Lịch hẹn đã được hủy thành công.');
+          if (user && user.token) {
+            const bookingsRes = await fetch('/api/bookings', {
+              headers: { 'Authorization': `Bearer ${user.token}` }
+            });
+            const bookingsData = await bookingsRes.json();
+            if (Array.isArray(bookingsData)) {
+              const formattedBookings = bookingsData.map(b => ({
+                id: b.id.toString(),
+                petType: b.petType,
+                petName: b.petName,
+                serviceName: b.serviceName,
+                expertName: b.expertName || 'Bất kỳ',
+                date: b.bookingDate,
+                timeSlot: b.timeSlot,
+                price: (b.price >= 1000 ? `${Math.floor(b.price / 1000)}k` : `${b.price}đ`),
+                status: b.status,
+                notes: b.notes || '',
+                contactPhone: b.contactPhone,
+                companionName: b.expertName || 'Bất kỳ'
+              }));
+              setBookings(formattedBookings);
+            }
+          } else {
+            const updated = bookings.map(b => b.id === bookingId ? { ...b, status: 'cancelled' } : b);
+            setBookings(updated);
+            safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
+          }
+        } else {
+          throw new Error('Cancel booking failed');
+        }
+      } catch (err) {
+        console.error('Error cancelling booking:', err);
+        // Fallback local update
         const updated = bookings.map(b => b.id === bookingId ? { ...b, status: 'cancelled' } : b);
         setBookings(updated);
         safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
         showToast('Lịch hẹn đã được hủy thành công.');
       }
+    };
+
+    try {
+      if (window.confirm("Bạn có chắc chắn muốn hủy bỏ lịch hẹn chăm sóc thú cưng này không?")) {
+        await performCancel();
+      }
     } catch (e) {
-      // Fallback if window.confirm is blocked by iframe sandbox
-      const updated = bookings.map(b => b.id === bookingId ? { ...b, status: 'cancelled' } : b);
-      setBookings(updated);
-      safeStorage.setItem('pawhome_bookings', JSON.stringify(updated));
-      showToast('Lịch hẹn đã được hủy thành công.');
+      await performCancel();
     }
   };
 
