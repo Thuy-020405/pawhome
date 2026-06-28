@@ -32,15 +32,12 @@ export const requireAuth = async (
     const email = token.replace('db-token-', '');
     try {
       const { db } = await import('../../backend/index.ts');
-      const { users } = await import('../../backend/schema.ts');
-      const { eq } = await import('drizzle-orm');
-      const userResult = await db.select().from(users).where(eq(users.email, email));
-      if (userResult.length > 0) {
-        const u = userResult[0];
+      const dbUser = await db.getUserByEmail(email);
+      if (dbUser) {
         req.user = {
-          uid: u.uid || `db-uid-${u.id}`,
-          email: u.email,
-          name: u.fullName || u.email.split('@')[0]
+          uid: dbUser.uid || `db-uid-${dbUser.id}`,
+          email: dbUser.email,
+          name: dbUser.fullName || dbUser.email.split('@')[0]
         } as any;
         return next();
       }

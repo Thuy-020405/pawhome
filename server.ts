@@ -2,10 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { db } from './backend/index.ts';
-import { services, experts, articles, bookings, users, pets, petReminders } from './backend/schema.ts';
-import { eq, desc } from 'drizzle-orm';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
-import { getOrCreateUser } from './backend/users.ts';
 
 async function startServer() {
   const app = express();
@@ -22,7 +19,7 @@ async function startServer() {
   // 2. FETCH ALL SERVICES
   app.get('/api/services', async (req, res) => {
     try {
-      const allServices = await db.select().from(services);
+      const allServices = await db.getServices();
       res.json(allServices);
     } catch (error: any) {
       console.error('Error fetching services:', error);
@@ -34,11 +31,11 @@ async function startServer() {
   app.get('/api/services/:id', async (req, res) => {
     try {
       const serviceId = req.params.id;
-      const result = await db.select().from(services).where(eq(services.id, serviceId));
-      if (result.length === 0) {
+      const result = await db.getServiceById(serviceId);
+      if (!result) {
         return res.status(404).json({ error: `Service with ID ${serviceId} not found` });
       }
-      res.json(result[0]);
+      res.json(result);
     } catch (error) {
       console.error('Error fetching service details:', error);
       res.status(500).json({ error: 'Database query failed.' });
@@ -48,7 +45,7 @@ async function startServer() {
   // 4. FETCH ALL EXPERTS
   app.get('/api/experts', async (req, res) => {
     try {
-      const allExperts = await db.select().from(experts);
+      const allExperts = await db.getExperts();
       res.json(allExperts);
     } catch (error) {
       console.error('Error fetching experts:', error);
@@ -59,7 +56,7 @@ async function startServer() {
   // 5. FETCH ALL ARTICLES
   app.get('/api/articles', async (req, res) => {
     try {
-      const allArticles = await db.select().from(articles).orderBy(desc(articles.publishedAt));
+      const allArticles = await db.getArticles();
       res.json(allArticles);
     } catch (error) {
       console.error('Error fetching articles:', error);
@@ -77,7 +74,7 @@ async function startServer() {
       if (!email) {
         return res.status(400).json({ error: 'Email is required from Firebase Auth' });
       }
-      const dbUser = await getOrCreateUser(uid, email, name);
+      const dbUser = await db.getOrCreateUser(uid, email, name);
       res.json(dbUser);
     } catch (error: any) {
       console.error('Error synchronizing user:', error);
@@ -94,12 +91,10 @@ async function startServer() {
       }
 
       // Tìm người dùng trong database bằng email
-      const result = await db.select().from(users).where(eq(users.email, email.trim().toLowerCase()));
-      if (result.length === 0) {
+      const dbUser = await db.getUserByEmail(email);
+      if (!dbUser) {
         return res.status(401).json({ error: 'Tài khoản không tồn tại trên hệ thống.' });
       }
-
-      const dbUser = result[0];
 
       // Để thuận tiện cho việc chạy thử nghiệm và kiểm tra bằng tài khoản mẫu trong file SQL (ví dụ: thuy.nguyen@gmail.com, hoang.pham@gmail.com, mai.le@gmail.com)
       // Chúng tôi chấp nhận mật khẩu mặc định là '123456' hoặc khớp mật khẩu demo tương ứng:
@@ -138,36 +133,13 @@ async function startServer() {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      // Find the user's DB ID from their Firebase UID
-      const userResult = await db.select().from(users).where(eq(users.uid, req.user.uid));
-      if (userResult.length === 0) {
+      // Find the user's DB profile from their email
+      const dbUser = await db.getUserByEmail(req.user.email || '');
+      if (!dbUser) {
         return res.status(404).json({ error: 'User not synchronized in database' });
       }
 
-      const dbUserId = userResult[0].id;
-
-      // Select bookings, joining with service & expert details
-      const userBookings = await db.select({
-        id: bookings.id,
-        petType: bookings.petType,
-        petName: bookings.petName,
-        bookingDate: bookings.bookingDate,
-        timeSlot: bookings.timeSlot,
-        price: bookings.price,
-        status: bookings.status,
-        notes: bookings.notes,
-        contactPhone: bookings.contactPhone,
-        serviceId: bookings.serviceId,
-        serviceName: services.name,
-        expertId: bookings.expertId,
-        expertName: experts.name,
-      })
-      .from(bookings)
-      .leftJoin(services, eq(bookings.serviceId, services.id))
-      .leftJoin(experts, eq(bookings.expertId, experts.id))
-      .where(eq(bookings.userId, dbUserId))
-      .orderBy(desc(bookings.createdAt));
-
+      const userBookings = await db.getBookings(dbUser.id, dbUser.email, dbUser.role);
       res.json(userBookings);
     } catch (error) {
       console.error('Error fetching bookings:', error);
@@ -199,42 +171,37 @@ async function startServer() {
         try {
           const { adminAuth } = await import('./src/lib/firebase-admin.ts');
           const decodedToken = await adminAuth.verifyIdToken(token);
-          const userResult = await db.select().from(users).where(eq(users.uid, decodedToken.uid));
-          if (userResult.length > 0) {
-            dbUserId = userResult[0].id;
+          if (decodedToken.email) {
+            const dbUser = await db.getUserByEmail(decodedToken.email);
+            if (dbUser) {
+              dbUserId = dbUser.id;
+            }
           }
         } catch (authError) {
           console.warn('Invalid authorization token provided for booking; continuing as guest', authError);
         }
       }
 
-      // Find service and expert models to ensure ID validity
-      const serviceMatches = await db.select().from(services).where(eq(services.id, serviceId));
-      if (serviceMatches.length === 0) {
-        // Fallback to name match if sent as string title from old static formats
-        const serviceByName = await db.select().from(services).where(eq(services.name, serviceId));
-        if (serviceByName.length === 0) {
-          return res.status(400).json({ error: `Invalid service identifier: ${serviceId}` });
-        }
+      // Find service to ensure ID validity
+      const serviceMatches = await db.getServiceById(serviceId);
+      if (!serviceMatches) {
+        return res.status(400).json({ error: `Invalid service identifier: ${serviceId}` });
       }
 
-      const inserted = await db.insert(bookings)
-        .values({
-          userId: dbUserId,
-          petType,
-          petName,
-          serviceId,
-          expertId: expertId || null,
-          bookingDate,
-          timeSlot,
-          price,
-          status: 'upcoming',
-          notes: notes || null,
-          contactPhone,
-        })
-        .returning();
+      const inserted = await db.createBooking({
+        userId: dbUserId,
+        petType,
+        petName,
+        serviceId,
+        expertId,
+        bookingDate,
+        timeSlot,
+        price,
+        notes,
+        contactPhone
+      });
 
-      res.status(201).json(inserted[0]);
+      res.status(201).json(inserted);
     } catch (error) {
       console.error('Error creating booking:', error);
       res.status(500).json({ error: 'Database insert failed.' });
@@ -249,16 +216,12 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid booking ID' });
       }
 
-      const updated = await db.update(bookings)
-        .set({ status: 'cancelled' })
-        .where(eq(bookings.id, bookingId))
-        .returning();
-
-      if (updated.length === 0) {
+      const updated = await db.cancelBooking(bookingId);
+      if (!updated) {
         return res.status(404).json({ error: 'Booking not found' });
       }
 
-      res.json(updated[0]);
+      res.json(updated);
     } catch (error) {
       console.error('Error cancelling booking:', error);
       res.status(500).json({ error: 'Database update failed.' });
@@ -268,7 +231,7 @@ async function startServer() {
   // 10. FETCH ALL PETS AND REMINDERS
   app.get('/api/pets', async (req, res) => {
     try {
-      let dbUserId = 2; // Default fallback to user id 2 (thuy.nguyen@gmail.com)
+      let dbUserId = 1; // Default fallback to user id 1 (thuy.nguyen@gmail.com)
 
       // Try to extract bearer token if present
       const authHeader = req.headers.authorization;
@@ -277,9 +240,11 @@ async function startServer() {
         try {
           const { adminAuth } = await import('./src/lib/firebase-admin.ts');
           const decodedToken = await adminAuth.verifyIdToken(token);
-          const userResult = await db.select().from(users).where(eq(users.uid, decodedToken.uid));
-          if (userResult.length > 0) {
-            dbUserId = userResult[0].id;
+          if (decodedToken.email) {
+            const dbUser = await db.getUserByEmail(decodedToken.email);
+            if (dbUser) {
+              dbUserId = dbUser.id;
+            }
           }
         } catch (authError) {
           console.warn('Invalid authorization token for fetching pets, using fallback user', authError);
@@ -287,12 +252,12 @@ async function startServer() {
       }
 
       // Fetch pets for this user
-      const dbPets = await db.select().from(pets).where(eq(pets.userId, dbUserId));
+      const dbPets = await db.getPets(dbUserId);
       
       // Fetch reminders for these pets
       const formattedPets = [];
       for (const pet of dbPets) {
-        const reminders = await db.select().from(petReminders).where(eq(petReminders.petId, pet.id));
+        const reminders = await db.getRemindersForPet(pet.id);
         formattedPets.push({
           id: pet.id,
           name: pet.name,
@@ -311,7 +276,7 @@ async function startServer() {
             title: r.title,
             date: r.reminderDate,
             time: r.reminderTime,
-            isCompleted: r.isCompleted === 1
+            isCompleted: r.isCompleted
           }))
         });
       }
@@ -339,7 +304,7 @@ async function startServer() {
         notes
       } = req.body;
 
-      let dbUserId = 2; // Default fallback to user id 2 (thuy.nguyen@gmail.com)
+      let dbUserId = 1; // Default fallback to user id 1 (thuy.nguyen@gmail.com)
 
       // Try to extract bearer token if present
       const authHeader = req.headers.authorization;
@@ -348,9 +313,11 @@ async function startServer() {
         try {
           const { adminAuth } = await import('./src/lib/firebase-admin.ts');
           const decodedToken = await adminAuth.verifyIdToken(token);
-          const userResult = await db.select().from(users).where(eq(users.uid, decodedToken.uid));
-          if (userResult.length > 0) {
-            dbUserId = userResult[0].id;
+          if (decodedToken.email) {
+            const dbUser = await db.getUserByEmail(decodedToken.email);
+            if (dbUser) {
+              dbUserId = dbUser.id;
+            }
           }
         } catch (authError) {
           console.warn('Invalid authorization token for creating pet', authError);
@@ -360,32 +327,28 @@ async function startServer() {
       const healthStatus = status === 'warning' ? 'Đến lịch tiêm' : 'Sức khỏe tốt';
       const nextVaccinationDate = status === 'good' ? (vaccineDate || null) : null;
 
-      const inserted = await db.insert(pets)
-        .values({
-          userId: dbUserId,
-          name,
-          petType: type,
-          breed: breed || null,
-          ageLabel: age || null,
-          weightKg: weight ? weight.toString() : null,
-          healthStatus,
-          nextVaccinationDate,
-          image: image || null,
-          notes: notes || null,
-        })
-        .returning();
-
-      const newPetRecord = inserted[0];
+      const newPetRecord = await db.createPet({
+        userId: dbUserId,
+        name,
+        petType: type,
+        breed: breed || null,
+        ageLabel: age || null,
+        weightKg: weight ? weight.toString() : null,
+        healthStatus,
+        nextVaccinationDate,
+        image: image || null,
+        notes: notes || null,
+      });
 
       // If status is warning or vaccineAlert is provided, let's create a default vaccine reminder
       if (status === 'warning' || vaccineAlert) {
-        await db.insert(petReminders).values({
+        await db.createPetReminder({
           petId: newPetRecord.id,
           reminderType: 'vaccination',
           title: vaccineAlert || 'Tiêm phòng dại',
           reminderDate: new Date().toISOString().split('T')[0],
           reminderTime: '10:00',
-          isCompleted: 0
+          isCompleted: false
         });
       } else if (vaccineDate) {
         let formattedDate = vaccineDate;
@@ -395,13 +358,13 @@ async function startServer() {
             formattedDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
           }
         }
-        await db.insert(petReminders).values({
+        await db.createPetReminder({
           petId: newPetRecord.id,
           reminderType: 'vaccination',
           title: 'Lịch tiêm phòng sắp tới',
           reminderDate: formattedDate,
           reminderTime: '09:00',
-          isCompleted: 0
+          isCompleted: false
         });
       }
 
@@ -420,16 +383,12 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid pet ID' });
       }
 
-      // Delete the pet
-      const deleted = await db.delete(pets)
-        .where(eq(pets.id, petId))
-        .returning();
-
-      if (deleted.length === 0) {
+      const deleted = await db.deletePet(petId);
+      if (!deleted) {
         return res.status(404).json({ error: 'Pet not found' });
       }
 
-      res.json({ message: 'Pet deleted successfully', deleted: deleted[0] });
+      res.json({ message: 'Pet deleted successfully', deleted });
     } catch (error) {
       console.error('Error deleting pet:', error);
       res.status(500).json({ error: 'Database delete failed.' });
