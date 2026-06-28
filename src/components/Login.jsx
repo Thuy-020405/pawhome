@@ -55,6 +55,44 @@ export default function Login({
     );
   };
 
+  const handleDirectDbLogin = async (emailToLogin, passwordToLogin) => {
+    setIsSubmitting(true);
+    setErrorMsg('');
+    try {
+      const dbRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email: emailToLogin,
+          password: passwordToLogin
+        })
+      });
+
+      if (dbRes.ok) {
+        const dbUser = await dbRes.json();
+        onLoginSuccess({
+          id: dbUser.id,
+          name: dbUser.fullName || dbUser.email.split('@')[0],
+          email: dbUser.email,
+          phone: dbUser.phone || '',
+          role: dbUser.role,
+          uid: dbUser.uid,
+          token: dbUser.token
+        });
+      } else {
+        const errData = await dbRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Đăng nhập SQL thất bại.');
+      }
+    } catch (error) {
+      console.error('SQL login error:', error);
+      setErrorMsg(error.message || 'Đăng nhập bằng cơ sở dữ liệu thất bại.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleDemoLogin = async (role) => {
     setIsSubmitting(true);
     setErrorMsg('');
@@ -101,6 +139,38 @@ export default function Login({
         throw new Error('Mật khẩu tối thiểu phải từ 6 ký tự.');
       }
 
+      // 1. Thử đăng nhập trực tiếp bằng cơ sở dữ liệu SQL trước
+      try {
+        const dbRes = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            email: email.trim(),
+            password: password
+          })
+        });
+
+        if (dbRes.ok) {
+          const dbUser = await dbRes.json();
+          onLoginSuccess({
+            id: dbUser.id,
+            name: dbUser.fullName || dbUser.email.split('@')[0],
+            email: dbUser.email,
+            phone: dbUser.phone || '',
+            role: dbUser.role,
+            uid: dbUser.uid,
+            token: dbUser.token
+          });
+          setIsSubmitting(false);
+          return;
+        }
+      } catch (dbErr) {
+        console.warn('Database login attempt failed, trying Firebase fallback...', dbErr);
+      }
+
+      // 2. Dự phòng (Fallback): Thử đăng nhập qua Firebase Auth
       const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
       const idToken = await userCredential.user.getIdToken();
       
@@ -423,55 +493,115 @@ export default function Login({
                 border: '1px solid #f1f5f9'
               }}
             >
-              <h4 className="fw-bold text-dark mb-2 d-flex align-items-center gap-1.5" style={{ fontSize: '13px' }}>
-                <span className="material-symbols-outlined text-primary-custom" style={{ fontSize: '16px' }}>key</span>
-                Đăng nhập nhanh không cần mật khẩu (Bypass):
+              <h4 className="fw-bold text-dark mb-1.5 d-flex align-items-center gap-1.5" style={{ fontSize: '13px' }}>
+                <span className="material-symbols-outlined text-primary-custom" style={{ fontSize: '16px' }}>database</span>
+                Tài khoản từ File SQL (Có sẵn dữ liệu thú cưng & lịch hẹn):
               </h4>
-              <p className="text-muted mb-3" style={{ fontSize: '11px', lineHeight: '1.4' }}>
-                Bấm trực tiếp vào các tài khoản dưới đây để đăng nhập chạy thử nhanh mà không cần cấu hình Firebase:
+              <p className="text-muted mb-2.5" style={{ fontSize: '11px', lineHeight: '1.4' }}>
+                Bấm trực tiếp để đăng nhập bằng dữ liệu người dùng được nạp từ file SQL mẫu:
               </p>
-              <div className="d-flex flex-column gap-2 small" style={{ fontSize: '12px' }}>
+              
+              <div className="d-flex flex-column gap-2 small mb-3" style={{ fontSize: '11.5px' }}>
                 <button 
                   type="button"
-                  onClick={() => handleDemoLogin('admin')}
-                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  onClick={() => handleDirectDbLogin('thuy.nguyen@gmail.com', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="fw-bold text-dark">Nguyễn Thị Thúy (Có 2 thú cưng & lịch sắp tới)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
+                  </div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>thuy.nguyen@gmail.com</strong> (Mật khẩu: 123456)</div>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => handleDirectDbLogin('hoang.pham@gmail.com', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="fw-bold text-dark">Phạm Văn Hoàng (Có lịch sử đặt chỗ)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
+                  </div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>hoang.pham@gmail.com</strong> (Mật khẩu: 123456)</div>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => handleDirectDbLogin('mai.le@gmail.com', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="fw-bold text-dark">Lê Thị Mai (Lịch đã hủy)</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
+                  </div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>mai.le@gmail.com</strong> (Mật khẩu: 123456)</div>
+                </button>
+              </div>
+
+              <h4 className="fw-bold text-dark mb-1.5 d-flex align-items-center gap-1.5 border-top pt-2.5" style={{ fontSize: '13px' }}>
+                <span className="material-symbols-outlined text-primary-custom" style={{ fontSize: '16px' }}>support_agent</span>
+                Chuyên gia & Quản trị viên từ SQL (Admin & Experts):
+              </h4>
+              
+              <div className="d-flex flex-column gap-2 small" style={{ fontSize: '11.5px' }}>
+                <button 
+                  type="button"
+                  onClick={() => handleDirectDbLogin('admin@pawhome.vn', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
                   style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
                 >
                   <div className="d-flex align-items-center justify-content-between w-100">
                     <span className="badge bg-danger" style={{ fontSize: '9px' }}>QUẢN TRỊ VIÊN (ADMIN)</span>
-                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
                   </div>
-                  <div className="text-muted mt-1">Email: <strong className="text-dark">admin@pawhome.vn</strong></div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>admin@pawhome.vn</strong> (Mật khẩu: 123456)</div>
                 </button>
 
                 <button 
                   type="button"
-                  onClick={() => handleDemoLogin('customer')}
-                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  onClick={() => handleDirectDbLogin('minhtuan.expert@pawhome.vn', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
                   style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
                 >
                   <div className="d-flex align-items-center justify-content-between w-100">
-                    <span className="badge bg-success" style={{ fontSize: '9px' }}>KHÁCH HÀNG (CUSTOMER)</span>
-                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                    <span className="badge bg-primary" style={{ fontSize: '9px' }}>CHUYÊN GIA TÂM LÝ - DR. MINH TUẤN</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
                   </div>
-                  <div className="text-muted mt-1">Email: <strong className="text-dark">customer@pawhome.vn</strong></div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>minhtuan.expert@pawhome.vn</strong> (Mật khẩu: 123456)</div>
                 </button>
 
                 <button 
                   type="button"
-                  onClick={() => handleDemoLogin('expert')}
-                  className="p-2.5 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  onClick={() => handleDirectDbLogin('lanhuong.expert@pawhome.vn', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
                   style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
                 >
                   <div className="d-flex align-items-center justify-content-between w-100">
-                    <span className="badge bg-primary" style={{ fontSize: '9px' }}>CHUYÊN GIA (EXPERT)</span>
-                    <span className="text-primary-custom small fw-bold">👉 Click để vào</span>
+                    <span className="badge bg-primary" style={{ fontSize: '9px' }}>CHUYÊN GIA GROOMING - LAN HƯƠNG</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
                   </div>
-                  <div className="text-muted mt-1">Email: <strong className="text-dark">expert@pawhome.vn</strong></div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>lanhuong.expert@pawhome.vn</strong> (Mật khẩu: 123456)</div>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => handleDirectDbLogin('quocbao.expert@pawhome.vn', '123456')}
+                  className="p-2 bg-white rounded border border-light-subtle text-start w-100 transition-all hover-shadow-sm d-flex flex-column gap-0.5"
+                  style={{ cursor: 'pointer', transition: 'all 0.2s ease-in-out' }}
+                >
+                  <div className="d-flex align-items-center justify-content-between w-100">
+                    <span className="badge bg-primary" style={{ fontSize: '9px' }}>HLV CHÓ K9 - ANH QUỐC BẢO</span>
+                    <span className="text-primary-custom small fw-bold">👉 Click</span>
+                  </div>
+                  <div className="text-muted" style={{ fontSize: '11px' }}>Email: <strong>quocbao.expert@pawhome.vn</strong> (Mật khẩu: 123456)</div>
                 </button>
               </div>
-              <p className="mt-3 mb-0 text-muted" style={{ fontSize: '10.5px', lineHeight: '1.4' }}>
-                💡 <strong>Lưu ý:</strong> Cách này giúp bạn trải nghiệm đầy đủ vai trò một cách cực kỳ tiện lợi!
+              <p className="mt-3 mb-0 text-muted" style={{ fontSize: '10px', lineHeight: '1.4' }}>
+                💡 <strong>Lưu ý:</strong> Đăng nhập trực tiếp bằng form với bất kỳ email nào trên đây cùng mật khẩu <strong>123456</strong> cũng sẽ được xác thực qua SQL database thành công!
               </p>
             </div>
 

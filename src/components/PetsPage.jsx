@@ -29,20 +29,8 @@ const defaultPets = [
   }
 ];
 
-export default function PetsPage({ isDarkMode }) {
-  // Load pets from local storage or use default list
-  const [pets, setPets] = useState(() => {
-    const saved = safeStorage.getItem('pawhome_pets');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return defaultPets;
-      }
-    }
-    return defaultPets;
-  });
-
+export default function PetsPage({ isDarkMode, user }) {
+  const [pets, setPets] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   
@@ -62,6 +50,35 @@ export default function PetsPage({ isDarkMode }) {
   const [imagePreview, setImagePreview] = useState("");
   const [formErrors, setFormErrors] = useState({});
 
+  const fetchPets = async () => {
+    try {
+      const headers = {};
+      if (user && user.token) {
+        headers['Authorization'] = `Bearer ${user.token}`;
+      }
+      const response = await fetch('/api/pets', { headers });
+      if (response.ok) {
+        const data = await response.json();
+        setPets(data);
+      }
+    } catch (error) {
+      console.error('Error fetching pets:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchPets();
+  }, [user]);
+
+  // Collect all reminders dynamically from the pets list
+  const allReminders = pets.flatMap(pet => 
+    (pet.reminders || []).map(r => ({
+      ...r,
+      petName: pet.name,
+      petImage: pet.image
+    }))
+  );
+
   // Trigger file selection and read image as Base64 string for direct preview & persistence
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -75,7 +92,7 @@ export default function PetsPage({ isDarkMode }) {
     }
   };
 
-  const handleSavePet = (e) => {
+  const handleSavePet = async (e) => {
     e.preventDefault();
     
     // Simple validation
@@ -99,51 +116,85 @@ export default function PetsPage({ isDarkMode }) {
     }
 
     const petToAdd = {
-      id: Date.now(),
       name: newPet.name.trim(),
       breed: newPet.breed.trim() || "Không xác định",
       type: newPet.type,
       age: newPet.age.trim() ? (newPet.age.includes("tuổi") || newPet.age.includes("tháng") ? newPet.age : `${newPet.age} tuổi`) : "Chưa cập nhật tuổi",
       weight: newPet.weight || "0",
       status: newPet.status,
-      vaccineDate: newPet.status === 'good' ? (newPet.vaccineDate.trim() || "Chưa có lịch") : "",
-      vaccineAlert: newPet.status === 'warning' ? (newPet.vaccineAlert.trim() || "Đến lịch tiêm phòng") : "",
+      vaccineDate: newPet.status === 'good' ? (newPet.vaccineDate.trim() || "") : "",
+      vaccineAlert: newPet.status === 'warning' ? (newPet.vaccineAlert.trim() || "") : "",
       image: finalImage
     };
 
-    const updatedPets = [petToAdd, ...pets];
-    setPets(updatedPets);
-    safeStorage.setItem('pawhome_pets', JSON.stringify(updatedPets));
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (user && user.token) {
+        headers['Authorization'] = `Bearer ${user.token}`;
+      }
+      
+      const response = await fetch('/api/pets', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(petToAdd)
+      });
 
-    // Reset and close
-    setNewPet({
-      name: "",
-      type: "Chó",
-      breed: "",
-      age: "",
-      weight: "",
-      status: "good",
-      vaccineDate: "",
-      vaccineAlert: "",
-      image: ""
-    });
-    setImagePreview("");
-    setFormErrors({});
-    setShowModal(false);
+      if (response.ok) {
+        await fetchPets(); // Refresh pet list from database
+        
+        // Reset and close
+        setNewPet({
+          name: "",
+          type: "Chó",
+          breed: "",
+          age: "",
+          weight: "",
+          status: "good",
+          vaccineDate: "",
+          vaccineAlert: "",
+          image: ""
+        });
+        setImagePreview("");
+        setFormErrors({});
+        setShowModal(false);
 
-    // Show beautiful toast notification
-    setToastMessage(`Đã thêm thành công bé ${petToAdd.name}! 🐾`);
-    setTimeout(() => setToastMessage(""), 4000);
+        // Show beautiful toast notification
+        setToastMessage(`Đã thêm thành công bé ${petToAdd.name}! 🐾`);
+        setTimeout(() => setToastMessage(""), 4000);
+      } else {
+        const errData = await response.json();
+        alert(errData.error || "Không thể thêm thú cưng. Vui lòng thử lại.");
+      }
+    } catch (err) {
+      console.error('Error saving pet:', err);
+    }
   };
 
-  const handleDeletePet = (id, name) => {
+  const handleDeletePet = async (id, name) => {
     if (window.confirm(`Bạn có chắc chắn muốn xóa bé ${name} khỏi danh sách thú cưng?`)) {
-      const updatedPets = pets.filter(p => p.id !== id);
-      setPets(updatedPets);
-      safeStorage.setItem('pawhome_pets', JSON.stringify(updatedPets));
+      try {
+        const headers = {};
+        if (user && user.token) {
+          headers['Authorization'] = `Bearer ${user.token}`;
+        }
 
-      setToastMessage(`Đã xóa bé ${name} thành công.`);
-      setTimeout(() => setToastMessage(""), 4000);
+        const response = await fetch(`/api/pets/${id}`, {
+          method: 'DELETE',
+          headers
+        });
+
+        if (response.ok) {
+          await fetchPets(); // Refresh from DB
+
+          setToastMessage(`Đã xóa bé ${name} thành công.`);
+          setTimeout(() => setToastMessage(""), 4000);
+        } else {
+          const errData = await response.json();
+          alert(errData.error || "Không thể xóa thú cưng.");
+        }
+      } catch (err) {
+        console.error('Error deleting pet:', err);
+      }
     }
   };
 
@@ -344,25 +395,27 @@ export default function PetsPage({ isDarkMode }) {
               <h4 className="fw-bold fs-6 text-uppercase mb-4 opacity-75">Lịch sắp tới</h4>
               
               <div className="d-flex flex-column gap-3 position-relative z-1">
-                <div className="d-flex gap-3 p-3 rounded-3" style={{ backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(4px)' }}>
-                  <div className="p-2 rounded-2 d-flex align-items-center justify-content-center h-100" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
-                    <span className="material-symbols-outlined text-white">vaccines</span>
-                  </div>
-                  <div>
-                    <p className="fw-bold mb-1 m-0">Tiêm phòng dại</p>
-                    <p className="fs-7 m-0 opacity-75">LuLu • 10:30, 25/08</p>
-                  </div>
-                </div>
-
-                <div className="d-flex gap-3 p-3 rounded-3" style={{ backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(4px)' }}>
-                  <div className="p-2 rounded-2 d-flex align-items-center justify-content-center h-100" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
-                    <Scissors size={20} className="text-white" />
-                  </div>
-                  <div>
-                    <p className="fw-bold mb-1 m-0">Cắt tỉa lông</p>
-                    <p className="fs-7 m-0 opacity-75">Mochi • 14:00, 28/08</p>
-                  </div>
-                </div>
+                {allReminders.length === 0 ? (
+                  <p className="text-white text-opacity-75 small m-0">Chưa có lịch nhắc nhở sức khỏe nào cho các bé cưng.</p>
+                ) : (
+                  allReminders.map((rem) => (
+                    <div key={rem.id} className="d-flex gap-3 p-3 rounded-3" style={{ backgroundColor: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(4px)' }}>
+                      <div className="p-2 rounded-2 d-flex align-items-center justify-content-center h-100" style={{ backgroundColor: 'rgba(255,255,255,0.2)', minWidth: '36px' }}>
+                        {rem.type === 'vaccination' ? (
+                          <span className="material-symbols-outlined text-white">vaccines</span>
+                        ) : (
+                          <Scissors size={20} className="text-white" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="fw-bold mb-1 m-0">{rem.title}</p>
+                        <p className="fs-7 m-0 opacity-75">
+                          {rem.petName} • {rem.time || 'Cả ngày'}{rem.date ? `, ${new Date(rem.date).toLocaleDateString('vi-VN')}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
               
               <button className="btn btn-link text-white text-decoration-none w-100 mt-4 border-bottom border-white border-opacity-25 rounded-0 pb-2">

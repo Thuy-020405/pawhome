@@ -454,7 +454,7 @@ export default function App() {
             )}
 
             {currentView === 'pets' && (
-              <PetsPage isDarkMode={isDarkMode} />
+              <PetsPage isDarkMode={isDarkMode} user={user} />
             )}
 
             {currentView === 'why-pawhome' && (

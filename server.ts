@@ -1,11 +1,11 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { db } from './src/db/index.ts';
-import { services, experts, articles, bookings, users } from './src/db/schema.ts';
+import { db } from './backend/index.ts';
+import { services, experts, articles, bookings, users, pets, petReminders } from './backend/schema.ts';
 import { eq, desc } from 'drizzle-orm';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
-import { getOrCreateUser } from './src/db/users.ts';
+import { getOrCreateUser } from './backend/users.ts';
 
 async function startServer() {
   const app = express();
@@ -82,6 +82,52 @@ async function startServer() {
     } catch (error: any) {
       console.error('Error synchronizing user:', error);
       res.status(500).json({ error: error.message || 'Synchronization failed.' });
+    }
+  });
+
+  // 6b. DIRECT DATABASE LOGIN FALLBACK (Lấy dữ liệu người dùng trong file SQL/PostgreSQL để đăng nhập)
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Vui lòng cung cấp email và mật khẩu.' });
+      }
+
+      // Tìm người dùng trong database bằng email
+      const result = await db.select().from(users).where(eq(users.email, email.trim().toLowerCase()));
+      if (result.length === 0) {
+        return res.status(401).json({ error: 'Tài khoản không tồn tại trên hệ thống.' });
+      }
+
+      const dbUser = result[0];
+
+      // Để thuận tiện cho việc chạy thử nghiệm và kiểm tra bằng tài khoản mẫu trong file SQL (ví dụ: thuy.nguyen@gmail.com, hoang.pham@gmail.com, mai.le@gmail.com)
+      // Chúng tôi chấp nhận mật khẩu mặc định là '123456' hoặc khớp mật khẩu demo tương ứng:
+      const isValidPassword = 
+        password === '123456' || 
+        password === 'customer123' || 
+        password === 'admin123' || 
+        password === 'expert123' ||
+        (dbUser.role === 'admin' && password === 'admin123') ||
+        (dbUser.role === 'expert' && password === 'expert123');
+
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Mật khẩu không chính xác.' });
+      }
+
+      // Trả về thông tin đăng nhập cùng mã token dạng db-token-
+      res.json({
+        id: dbUser.id,
+        fullName: dbUser.fullName,
+        email: dbUser.email,
+        phone: dbUser.phone || '',
+        role: dbUser.role,
+        uid: dbUser.uid || `db-uid-${dbUser.id}`,
+        token: `db-token-${dbUser.email}`
+      });
+    } catch (error: any) {
+      console.error('Error logging in with SQL database:', error);
+      res.status(500).json({ error: 'Đăng nhập thất bại do lỗi hệ thống.' });
     }
   });
 
@@ -216,6 +262,177 @@ async function startServer() {
     } catch (error) {
       console.error('Error cancelling booking:', error);
       res.status(500).json({ error: 'Database update failed.' });
+    }
+  });
+
+  // 10. FETCH ALL PETS AND REMINDERS
+  app.get('/api/pets', async (req, res) => {
+    try {
+      let dbUserId = 2; // Default fallback to user id 2 (thuy.nguyen@gmail.com)
+
+      // Try to extract bearer token if present
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split('Bearer ')[1];
+        try {
+          const { adminAuth } = await import('./src/lib/firebase-admin.ts');
+          const decodedToken = await adminAuth.verifyIdToken(token);
+          const userResult = await db.select().from(users).where(eq(users.uid, decodedToken.uid));
+          if (userResult.length > 0) {
+            dbUserId = userResult[0].id;
+          }
+        } catch (authError) {
+          console.warn('Invalid authorization token for fetching pets, using fallback user', authError);
+        }
+      }
+
+      // Fetch pets for this user
+      const dbPets = await db.select().from(pets).where(eq(pets.userId, dbUserId));
+      
+      // Fetch reminders for these pets
+      const formattedPets = [];
+      for (const pet of dbPets) {
+        const reminders = await db.select().from(petReminders).where(eq(petReminders.petId, pet.id));
+        formattedPets.push({
+          id: pet.id,
+          name: pet.name,
+          type: pet.petType,
+          breed: pet.breed || 'Không xác định',
+          age: pet.ageLabel || 'Chưa cập nhật tuổi',
+          weight: pet.weightKg ? pet.weightKg.toString() : '0',
+          status: pet.healthStatus === 'Đến lịch tiêm' ? 'warning' : 'good',
+          vaccineDate: pet.nextVaccinationDate || '',
+          vaccineAlert: pet.healthStatus === 'Đến lịch tiêm' ? 'Đã quá hạn tiêm chủng' : '',
+          image: pet.image || 'https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=500&auto=format&fit=crop&q=60',
+          notes: pet.notes || '',
+          reminders: reminders.map(r => ({
+            id: r.id,
+            type: r.reminderType,
+            title: r.title,
+            date: r.reminderDate,
+            time: r.reminderTime,
+            isCompleted: r.isCompleted === 1
+          }))
+        });
+      }
+      
+      res.json(formattedPets);
+    } catch (error) {
+      console.error('Error fetching pets:', error);
+      res.status(500).json({ error: 'Database query failed.' });
+    }
+  });
+
+  // 11. ADD A NEW PET
+  app.post('/api/pets', async (req, res) => {
+    try {
+      const {
+        name,
+        type,
+        breed,
+        age,
+        weight,
+        status,
+        vaccineDate,
+        vaccineAlert,
+        image,
+        notes
+      } = req.body;
+
+      let dbUserId = 2; // Default fallback to user id 2 (thuy.nguyen@gmail.com)
+
+      // Try to extract bearer token if present
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split('Bearer ')[1];
+        try {
+          const { adminAuth } = await import('./src/lib/firebase-admin.ts');
+          const decodedToken = await adminAuth.verifyIdToken(token);
+          const userResult = await db.select().from(users).where(eq(users.uid, decodedToken.uid));
+          if (userResult.length > 0) {
+            dbUserId = userResult[0].id;
+          }
+        } catch (authError) {
+          console.warn('Invalid authorization token for creating pet', authError);
+        }
+      }
+
+      const healthStatus = status === 'warning' ? 'Đến lịch tiêm' : 'Sức khỏe tốt';
+      const nextVaccinationDate = status === 'good' ? (vaccineDate || null) : null;
+
+      const inserted = await db.insert(pets)
+        .values({
+          userId: dbUserId,
+          name,
+          petType: type,
+          breed: breed || null,
+          ageLabel: age || null,
+          weightKg: weight ? weight.toString() : null,
+          healthStatus,
+          nextVaccinationDate,
+          image: image || null,
+          notes: notes || null,
+        })
+        .returning();
+
+      const newPetRecord = inserted[0];
+
+      // If status is warning or vaccineAlert is provided, let's create a default vaccine reminder
+      if (status === 'warning' || vaccineAlert) {
+        await db.insert(petReminders).values({
+          petId: newPetRecord.id,
+          reminderType: 'vaccination',
+          title: vaccineAlert || 'Tiêm phòng dại',
+          reminderDate: new Date().toISOString().split('T')[0],
+          reminderTime: '10:00',
+          isCompleted: 0
+        });
+      } else if (vaccineDate) {
+        let formattedDate = vaccineDate;
+        if (vaccineDate.includes('/')) {
+          const parts = vaccineDate.split('/');
+          if (parts.length === 3) {
+            formattedDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          }
+        }
+        await db.insert(petReminders).values({
+          petId: newPetRecord.id,
+          reminderType: 'vaccination',
+          title: 'Lịch tiêm phòng sắp tới',
+          reminderDate: formattedDate,
+          reminderTime: '09:00',
+          isCompleted: 0
+        });
+      }
+
+      res.status(201).json(newPetRecord);
+    } catch (error) {
+      console.error('Error creating pet:', error);
+      res.status(500).json({ error: 'Database insert failed.' });
+    }
+  });
+
+  // 12. DELETE PET BY ID
+  app.delete('/api/pets/:id', async (req, res) => {
+    try {
+      const petId = parseInt(req.params.id, 10);
+      if (isNaN(petId)) {
+        return res.status(400).json({ error: 'Invalid pet ID' });
+      }
+
+      // Delete the pet
+      const deleted = await db.delete(pets)
+        .where(eq(pets.id, petId))
+        .returning();
+
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: 'Pet not found' });
+      }
+
+      res.json({ message: 'Pet deleted successfully', deleted: deleted[0] });
+    } catch (error) {
+      console.error('Error deleting pet:', error);
+      res.status(500).json({ error: 'Database delete failed.' });
     }
   });
 
